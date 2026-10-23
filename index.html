@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="theme-color" content="#0b0f14">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<title>Botswana Truckers</title>
+<style>
+  :root{--accent:#ffb300;--bg:#0b0f14;--panel:rgba(12,16,22,.78);--line:rgba(255,255,255,.18)}
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;user-select:none;-webkit-user-select:none;touch-action:none}
+  html,body{margin:0;height:100%;background:var(--bg);color:#fff;font-family:system-ui,Segoe UI,Roboto,sans-serif;overflow:hidden}
+  canvas#gl{position:fixed;inset:0;width:100%;height:100%;display:block}
+  #hud{position:fixed;inset:0;pointer-events:none}
+  #hud *{pointer-events:auto}
+  .btn{background:var(--panel);border:1px solid var(--line);color:#fff;border-radius:14px;padding:10px 12px;font-size:14px;font-weight:600;backdrop-filter:blur(6px);min-width:46px;min-height:46px}
+  .btn:active,.btn.on{background:var(--accent);color:#111}
+  #top{position:absolute;top:calc(8px + env(safe-area-inset-top));left:8px;right:8px;display:flex;gap:6px;flex-wrap:wrap;justify-content:space-between}
+  #top .grp{display:flex;gap:6px;flex-wrap:wrap}
+  #speedo{position:absolute;bottom:calc(10px + env(safe-area-inset-bottom));left:50%;transform:translateX(-50%);background:var(--panel);border:1px solid var(--line);border-radius:18px;padding:6px 18px;text-align:center;pointer-events:none}
+  #speedo .v{font-size:34px;font-weight:800;line-height:1}
+  #speedo .u{font-size:11px;opacity:.75}
+  #speedo .g{font-size:15px;font-weight:700;color:var(--accent)}
+  #limit{position:absolute;top:calc(64px + env(safe-area-inset-top));right:10px;width:54px;height:54px;border-radius:50%;background:#fff;border:6px solid #d32f2f;color:#111;font-weight:800;font-size:20px;display:flex;align-items:center;justify-content:center;pointer-events:none}
+  #msg{position:absolute;top:calc(64px + env(safe-area-inset-top));left:50%;transform:translateX(-50%);background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:8px 14px;font-size:14px;max-width:70vw;text-align:center;opacity:0;transition:opacity .25s;pointer-events:none}
+  #msg.show{opacity:1}
+  #money{position:absolute;top:calc(64px + env(safe-area-inset-top));left:10px;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:6px 12px;font-weight:700;pointer-events:none}
+  #ctl{position:absolute;bottom:calc(10px + env(safe-area-inset-bottom));left:10px;right:10px;display:flex;justify-content:space-between;align-items:flex-end;pointer-events:none}
+  #ctl>*{pointer-events:auto}
+  #steerPad{display:flex;gap:10px}
+  #steerWheel{width:120px;height:120px;border-radius:50%;border:10px solid rgba(255,255,255,.55);background:rgba(0,0,0,.35);position:relative;display:none}
+  #steerWheel::after{content:"";position:absolute;left:50%;top:50%;width:70%;height:10px;background:rgba(255,255,255,.55);transform:translate(-50%,-50%)}
+  .pedals{display:flex;gap:10px;align-items:flex-end}
+  .pedal{width:84px;height:110px;border-radius:16px;font-size:15px}
+  .arrow{width:78px;height:78px;font-size:30px}
+  #mirrorPad{position:absolute;right:10px;top:50%;transform:translateY(-50%);display:none;flex-direction:column;gap:6px;align-items:center}
+  #mirrorPad.show{display:flex}
+  #mirrorPad .row{display:flex;gap:6px}
+  .panelWrap{position:fixed;inset:0;background:rgba(0,0,0,.55);display:none;align-items:center;justify-content:center;z-index:20}
+  .panelWrap.show{display:flex}
+  .panel{background:#10161e;border:1px solid var(--line);border-radius:18px;width:min(94vw,560px);max-height:88vh;overflow:auto;padding:14px;touch-action:pan-y}
+  .panel *{touch-action:pan-y}
+  .panel h2{margin:0 0 8px;font-size:18px}
+  .panel h3{margin:12px 0 6px;font-size:14px;color:var(--accent)}
+  .row2{display:flex;gap:8px;flex-wrap:wrap}
+  .row2 .btn{flex:1 1 30%}
+  .item{display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--line);font-size:14px;gap:8px}
+  .item small{opacity:.7;display:block}
+  select,input[type=range]{width:100%}
+  select{background:#1b2430;color:#fff;border:1px solid var(--line);border-radius:10px;padding:10px;font-size:15px}
+  #playlist{max-height:30vh;overflow:auto;margin-top:6px}
+  #playlist .item.cur{color:var(--accent)}
+  #boot{position:fixed;inset:0;z-index:50;background:radial-gradient(circle at 50% 30%,#1b2a3a,#07090d);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;text-align:center;padding:20px}
+  #boot h1{margin:0;font-size:30px;letter-spacing:1px}
+  #boot p{margin:0;opacity:.8;max-width:420px;font-size:14px}
+  #boot .btn{font-size:18px;padding:14px 28px;background:var(--accent);color:#111}
+  #err{color:#ff8a80;font-size:13px;max-width:480px}
+  #bar{width:min(70vw,300px);height:8px;background:#222;border-radius:6px;overflow:hidden}
+  #bar i{display:block;height:100%;width:0;background:var(--accent);transition:width .2s}
+  #cop{position:absolute;top:calc(120px + env(safe-area-inset-top));left:50%;transform:translateX(-50%);display:none;background:#c62828;border-radius:10px;padding:6px 14px;font-weight:800;animation:fl .5s infinite alternate;pointer-events:none}
+  @keyframes fl{from{background:#c62828}to{background:#1565c0}}
+</style>
+</head>
+<body>
+<canvas id="gl"></canvas>
+
+<div id="hud" style="display:none">
+  <div id="top">
+    <div class="grp">
+      <button class="btn" id="bShow">🏬 Showroom</button>
+      <button class="btn" id="bMusic">🎵 Music</button>
+      <button class="btn" id="bCam">📷 Camera</button>
+    </div>
+    <div class="grp">
+      <button class="btn" id="bMirror">🪞 Mirrors</button>
+      <button class="btn" id="bLights">💡 Lights</button>
+      <button class="btn" id="bHorn">📯 Horn</button>
+      <button class="btn" id="bSet">⚙️</button>
+    </div>
+  </div>
+  <div id="money">P 0</div>
+  <div id="limit">80</div>
+  <div id="msg"></div>
+  <div id="cop">🚓 POLICE</div>
+  <div id="mirrorPad">
+    <div class="row"><button class="btn" data-m="up">▲</button></div>
+    <div class="row"><button class="btn" data-m="left">◀</button><button class="btn" data-m="right">▶</button></div>
+    <div class="row"><button class="btn" data-m="down">▼</button></div>
+    <div class="row"><button class="btn" data-m="sel">L / R</button></div>
+  </div>
+  <div id="speedo"><div class="v" id="spd">0</div><div class="u">km/h</div><div class="g" id="gear">N</div></div>
+  <div id="ctl">
+    <div id="steerPad">
+      <button class="btn arrow" id="bL">◀</button>
+      <button class="btn arrow" id="bR">▶</button>
+      <div id="steerWheel"></div>
+    </div>
+    <div class="pedals">
+      <button class="btn pedal" id="bBrake">BRAKE</button>
+      <button class="btn pedal" id="bGas">GAS</button>
+    </div>
+  </div>
+</div>
+
+<div class="panelWrap" id="pSet"><div class="panel">
+  <h2>Settings</h2>
+  <h3>Steering mode</h3>
+  <div class="row2">
+    <button class="btn" data-steer="wheel">🎡 Wheel</button>
+    <button class="btn" data-steer="arrows">⬅️➡️ Arrows</button>
+    <button class="btn" data-steer="tilt">📱 Tilt</button>
+    <button class="btn" data-steer="gyro">🧭 Gyro</button>
+  </div>
+  <h3>Tilt / gyro sensitivity</h3>
+  <input type="range" id="sens" min="0.5" max="2.5" step="0.1" value="1.2">
+  <h3>Transmission</h3>
+  <div class="row2"><button class="btn" id="bAuto">Automatic</button></div>
+  <h3>Graphics</h3>
+  <select id="gfx"><option value="high">High (shadows, fog, reflections)</option><option value="med">Medium</option><option value="low">Low (best battery)</option></select>
+  <h3>Master volume</h3>
+  <input type="range" id="vol" min="0" max="1" step="0.05" value="0.8">
+  <div class="row2" style="margin-top:12px"><button class="btn" id="bResetSave">Reset save</button><button class="btn" id="bCloseSet">Close</button></div>
+</div></div>
+
+<div class="panelWrap" id="pMusic"><div class="panel">
+  <h2>🎵 Music player</h2>
+  <div class="row2">
+    <button class="btn" id="mAdd">📂 Add songs</button>
+    <button class="btn" id="mPrev">⏮</button>
+    <button class="btn" id="mPlay">▶/⏸</button>
+    <button class="btn" id="mNext">⏭</button>
+  </div>
+  <div style="margin-top:8px;font-size:14px" id="mNow">No song loaded</div>
+  <input type="range" id="mSeek" min="0" max="1000" value="0">
+  <h3>Volume</h3>
+  <input type="range" id="mVol" min="0" max="1" step="0.05" value="0.7">
+  <div class="row2" style="margin-top:6px"><button class="btn" id="mShuf">🔀 Shuffle</button><button class="btn" id="mClear">Clear</button><button class="btn" id="mClose">Close</button></div>
+  <div id="playlist"></div>
+  <input type="file" id="mFile" accept="audio/*" multiple style="display:none">
+</div></div>
+
+<div class="panelWrap" id="pShow"><div class="panel">
+  <h2>🏬 Showroom &amp; Workshop</h2>
+  <div id="showBody"></div>
+</div></div>
+
+<div id="boot">
+  <h1>BOTSWANA TRUCKERS</h1>
+  <p>Drive Volvo, Scania and MAN trucks on the A1 and A3 through savanna, Mopane woodland and toll gates. Obey the limit &ndash; the Botswana Police Service is watching.</p>
+  <div id="bar"><i></i></div>
+  <button class="btn" id="bStart" style="display:none">▶ START</button>
+  <div id="err"></div>
+</div>
+
+<script type="importmap">
+{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js" } }
+</script>
+<script type="module" src="main.js"></script>
+<script>
+if('serviceWorker' in navigator){window.addEventListener('load',()=>navigator.serviceWorker.register('sw.js').catch(()=>{}))}
+</script>
+</body>
+</html>
