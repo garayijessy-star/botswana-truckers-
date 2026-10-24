@@ -229,7 +229,9 @@ function setupInput() {
   const eng = mk('bEng', '🔑 Engine', 'right:276px;bottom:calc(14px + env(safe-area-inset-bottom))');
   eng.addEventListener('click', toggleEngine);
   const eb = mk('bEBrake', '🛑 E-Brake', 'right:276px;bottom:calc(70px + env(safe-area-inset-bottom));background:rgba(180,20,30,.85)');
-  holdButton(eb, () => { S.ebBtn = 1; }, () => { S.ebBtn = 0; });
+  const setEb = on => { if (S.ebLatch === on) return; S.ebLatch = on; eb.classList.toggle('on', on); eb.textContent = on ? '🛑 BRAKE ON' : '🛑 E-Brake'; if (on) audio.airApply(); else audio.airRelease(); };
+  S.setEb = setEb;
+  eb.addEventListener('click', () => { setEb(!S.ebLatch); toast(S.ebLatch ? 'Emergency brake ON. Tap again or press GAS to release.' : 'Emergency brake released', 2500); });
   const call = mk('bCall', '', 'left:50%;top:calc(150px + env(safe-area-inset-top));transform:translateX(-50%);display:none');
   call.addEventListener('click', startCall);
   buildFuelPanel();
@@ -458,7 +460,8 @@ function driveFrame(dt, panelOpen) {
   const st = save.settings;
   const kb = (keys.ArrowRight || keys.KeyD ? 1 : 0) - (keys.ArrowLeft || keys.KeyA ? 1 : 0);
   const gasIn = (S.gasBtn || keys.ArrowUp || keys.KeyW) ? 1 : 0;
-  const ebIn = (S.ebBtn || keys.KeyE || keys.KeyB) ? 1 : 0;
+  if (S.ebLatch && gasIn && S.engineOn && !panelOpen) S.setEb(false);   // pressing gas releases the brake
+  const ebIn = (S.ebLatch || keys.KeyE || keys.KeyB) ? 1 : 0;
   const brakeIn = (S.brakeBtn || keys.ArrowDown || keys.KeyS || keys.Space || ebIn) ? 1 : 0;
   S.brakeNow = brakeIn;
   if (S.crankT > 0 && !panelOpen) { S.crankT -= dt; if (S.crankT <= 0) { if (S.crankOk) { S.engineOn = true; } else toast('No fuel. Call for a fuel delivery.', 3500); } }
