@@ -1,11 +1,43 @@
 // Audio: synthesized engine (per-brand character), horn, siren, beeps, and a music player that plays your own files.
 
 export const ENGINE_PROFILES = {
-  volvo:  { cyl: 6, harm: [1.0, 0.55, 0.38, 0.22, 0.12], growl: 3,  cutoff: 900,  noise: 0.10, turbo: 0.9, idle: 600, redline: 2000, lope: 0.00 },
-  scania: { cyl: 8, harm: [1.0, 0.70, 0.45, 0.30, 0.18], growl: 7,  cutoff: 700,  noise: 0.12, turbo: 0.6, idle: 550, redline: 2100, lope: 0.35 },
-  man:    { cyl: 6, harm: [1.0, 0.45, 0.50, 0.35, 0.25], growl: 11, cutoff: 1100, noise: 0.16, turbo: 1.1, idle: 650, redline: 2000, lope: 0.05 },
-  scania6:{ cyl: 6, harm: [1.0, 0.62, 0.40, 0.26, 0.15], growl: 5,  cutoff: 800,  noise: 0.11, turbo: 0.8, idle: 580, redline: 2000, lope: 0.10 },
+  volvo:  { cyl: 6, harm: [1.0, 0.55, 0.38, 0.22, 0.12], growl: 3,  cutoff: 1500, noise: 0.10, turbo: 0.9, idle: 600, redline: 2000, lope: 0.00, knock: 0.85, bright: 0.9, uneven: false },
+  scania: { cyl: 8, harm: [1.0, 0.70, 0.45, 0.30, 0.18], growl: 7,  cutoff: 1300, noise: 0.12, turbo: 0.6, idle: 550, redline: 2100, lope: 0.35, knock: 1.0, bright: 1.0, uneven: true },
+  man:    { cyl: 6, harm: [1.0, 0.45, 0.50, 0.35, 0.25], growl: 11, cutoff: 1900, noise: 0.16, turbo: 1.1, idle: 650, redline: 2000, lope: 0.05, knock: 1.3, bright: 1.25, uneven: false },
+  scania6:{ cyl: 6, harm: [1.0, 0.85, 0.70, 0.55, 0.40], growl: 5,  cutoff: 2300, noise: 0.14, turbo: 1.3, idle: 580, redline: 2000, lope: 0.10, knock: 1.1, bright: 1.5, uneven: false },
 };
+
+// Renders one seamless loop of diesel combustion pulses (thump + body resonance + injector clatter).
+// Played back at different speeds to follow engine rpm, so the engine "chugs" like a real diesel instead of buzzing.
+function renderEngineLoop(sr, cyl, uneven, loaded, baseRpm, knockMul, bright) {
+  bright = bright || 1;
+  const cycle = 120 / baseRpm, cycles = Math.max(6, Math.round(1.6 / cycle));
+  const N = Math.round(sr * cycle * cycles), out = new Float32Array(N), ev = cyl * cycles;
+  let seed = 977 + cyl * 31 + (loaded ? 101 : 0) + Math.round(baseRpm); const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+  const scale = 750 / baseRpm;   // keep pulse length natural for the loop's own rpm
+  for (let k = 0; k < ev; k++) {
+    let t0 = (k / cyl) * cycle; if (uneven) t0 += (k % 2 ? 1 : -1) * 0.07 * cycle / cyl;
+    const amp = (0.7 + 0.6 * rnd()) * (uneven && k % 2 ? 0.78 : 1);
+    const ph1 = rnd() * 6.28, ph2 = rnd() * 6.28;
+    const i0 = Math.floor(t0 * sr), len = Math.floor(0.11 * sr * Math.max(0.5, scale));
+    for (let j = 0; j < len; j++) {
+      const t = j / sr / Math.max(0.5, scale), idx = (i0 + j + N) % N;
+      const thump = Math.sin(2 * Math.PI * (64 - 160 * t) * t) * Math.exp(-t / 0.03);
+      const body = Math.sin(2 * Math.PI * 131 * t + 1.1) * Math.exp(-t / 0.04) * 0.6;
+      const knock = (rnd() * 2 - 1) * Math.exp(-t / (loaded ? 0.0032 : 0.006)) * (loaded ? 0.4 : 0.85) * knockMul;
+      const crack = (rnd() * 2 - 1) * Math.exp(-t / 0.0011) * (loaded ? 0.55 : 0.35) * knockMul;
+      // mid/high content: injector tick, valve-train rattle and combustion ring (what a phone microphone really hears)
+      const ring = (Math.sin(2 * Math.PI * 820 * t + ph1) * 0.5 + Math.sin(2 * Math.PI * 1650 * t + ph2) * 0.35 + Math.sin(2 * Math.PI * 2700 * t + ph1 * 2) * 0.22) * Math.exp(-t / 0.0075);
+      const tick = (rnd() * 2 - 1) * Math.exp(-t / 0.0007) * 0.9;
+      const rattle = (rnd() * 2 - 1) * Math.exp(-t / 0.014) * 0.16;
+      out[idx] += amp * (thump * (loaded ? 0.62 : 0.42) + body * (loaded ? 0.55 : 0.4) + knock * 1.1 + crack * 1.3 + bright * (ring * (loaded ? 0.8 : 0.6) + tick * (loaded ? 0.5 : 0.7) + rattle));
+    }
+  }
+  let peak = 0, y = 0;
+  for (let pass = 0; pass < 1; pass++) for (let i = 0; i < N; i++) { y += 0.75 * (out[i] - y); out[i] = y; peak = Math.max(peak, Math.abs(y)); }
+  for (let i = 0; i < N; i++) out[i] /= (peak * 1.25 || 1);
+  return out;
+}
 
 function makeCurve(k) {
   const n = 1024, c = new Float32Array(n);
@@ -22,7 +54,7 @@ export class AudioSys {
     this.profile = ENGINE_PROFILES.volvo; this.profileName = 'volvo';
     this.volume = 0.8;
     this.playlist = []; this.cur = -1; this.shuffle = false;
-    this.onTrack = null;
+    this.onTrack = null; this.interior = true; this._lastLoad = 0; this._lastBrake = 0; this._eb = 0; this.engBufs = {};
   }
 
   init() {
@@ -35,10 +67,11 @@ export class AudioSys {
     this.musicGain = ctx.createGain(); this.musicGain.gain.value = 0.7; this.musicGain.connect(this.master);
 
     // Engine chain: oscillator bank -> shaper -> lowpass -> gain
+    this.engBus = ctx.createGain(); this.engBus.gain.value = 1; this.engBus.connect(this.sfx);
     this.engOut = ctx.createGain(); this.engOut.gain.value = 0;
     this.engFilter = ctx.createBiquadFilter(); this.engFilter.type = 'lowpass'; this.engFilter.Q.value = 1.2;
     this.shaper = ctx.createWaveShaper(); this.shaper.curve = makeCurve(6); this.shaper.oversample = '2x';
-    this.shaper.connect(this.engFilter); this.engFilter.connect(this.engOut); this.engOut.connect(this.sfx);
+    this.shaper.connect(this.engFilter); this.engFilter.connect(this.engOut); this.engOut.connect(this.engBus);
     this.oscs = [];
     for (let i = 0; i < 6; i++) {
       const o = ctx.createOscillator(); o.type = i === 0 ? 'sawtooth' : 'triangle';
@@ -46,6 +79,13 @@ export class AudioSys {
       o.connect(g); g.connect(this.shaper); o.start();
       this.oscs.push({ o, g });
     }
+    // Sampled diesel layer: four looping pulse trains (low/high rpm x idle-clatter/loaded), crossfaded by rpm and throttle
+    this.sampMix = ctx.createGain(); this.sampMix.gain.value = 1; this.sampMix.connect(this.engFilter);
+    this.samp = {};
+    for (const key of ['loI', 'loL', 'hiI', 'hiL']) {
+      const src = ctx.createBufferSource(); src.loop = true; const g = ctx.createGain(); g.gain.value = 0; src.connect(g); g.connect(this.sampMix); this.samp[key] = { src, g, started: false };
+    }
+    this._loadSamples();
     // Lope / pulse LFO on engine amplitude (gives the V8 burble & diesel chug)
     this.lope = ctx.createOscillator(); this.lope.frequency.value = 8;
     this.lopeGain = ctx.createGain(); this.lopeGain.gain.value = 0;
@@ -55,17 +95,17 @@ export class AudioSys {
     const len = ctx.sampleRate * 2, buf = ctx.createBuffer(1, len, ctx.sampleRate), d = buf.getChannelData(0);
     for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
     this.noiseBuf = buf;
-    const mkNoise = (type, f, q) => {
+    const mkNoise = (type, f, q, bus) => {
       const s = ctx.createBufferSource(); s.buffer = buf; s.loop = true;
       const fl = ctx.createBiquadFilter(); fl.type = type; fl.frequency.value = f; fl.Q.value = q || 0.7;
       const g = ctx.createGain(); g.gain.value = 0;
-      s.connect(fl); fl.connect(g); g.connect(this.sfx); s.start();
+      s.connect(fl); fl.connect(g); g.connect(bus || this.sfx); s.start();
       return { s, fl, g };
     };
-    this.nEng = mkNoise('lowpass', 500);
+    this.nEng = mkNoise('lowpass', 500, 0.7, this.engBus);
     this.nWind = mkNoise('bandpass', 700, 0.5);
     this.nRoad = mkNoise('lowpass', 250);
-    this.nTurbo = mkNoise('bandpass', 3000, 8);
+    this.nTurbo = mkNoise('bandpass', 3000, 8, this.engBus);
     this.nBrake = mkNoise('bandpass', 2200, 4);
 
     // Horn (two-tone air horn)
@@ -90,7 +130,39 @@ export class AudioSys {
 
   setVolume(v) { this.volume = v; if (this.ready) this.master.gain.setTargetAtTime(v, this.ctx.currentTime, 0.05); }
   setMusicVolume(v) { if (this.ready) this.musicGain.gain.setTargetAtTime(v, this.ctx.currentTime, 0.05); }
-  setProfile(name) { this.profileName = name; this.profile = ENGINE_PROFILES[name] || ENGINE_PROFILES.volvo; }
+  setProfile(name) { this.profileName = name; this.profile = ENGINE_PROFILES[name] || ENGINE_PROFILES.volvo; if (this.ready) this._loadSamples(); }
+  setEngineVolume(v) { if (this.ready) this.engBus.gain.setTargetAtTime(v, this.ctx.currentTime, 0.05); }
+  setSfxVolume(v) { if (this.ready) this.sfx.gain.setTargetAtTime(v, this.ctx.currentTime, 0.05); }
+  setInterior(on) { this.interior = !!on; }
+  _loadSamples() {
+    if (!this.ctx) return; const p = this.profile, key = this.profileName, ctx = this.ctx;
+    if (!this.engBufs[key]) {
+      const mk = (loaded, base) => { const d = renderEngineLoop(ctx.sampleRate, p.cyl, !!p.uneven, loaded, base, p.knock || 1, p.bright || 1), b = ctx.createBuffer(1, d.length, ctx.sampleRate); b.getChannelData(0).set(d); return b; };
+      this.engBufs[key] = { loI: mk(false, 700), loL: mk(true, 700), hiI: mk(false, 1500), hiL: mk(true, 1500) };
+    }
+    for (const k of ['loI', 'loL', 'hiI', 'hiL']) {
+      const slot = this.samp[k], buf = this.engBufs[key][k];
+      if (slot.started) { try { slot.src.stop(); } catch (_) {} const ns = ctx.createBufferSource(); ns.loop = true; ns.connect(slot.g); slot.src = ns; }
+      slot.src.buffer = buf; slot.src.start(); slot.started = true;
+    }
+  }
+  crank(dur = 0.9) {
+    if (!this.ready) return; const c = this.ctx, t = c.currentTime;
+    const o = c.createOscillator(), g = c.createGain(), lfo = c.createOscillator(), lg = c.createGain(), f = c.createBiquadFilter();
+    o.type = 'sawtooth'; o.frequency.value = 46; lfo.frequency.value = 9; lg.gain.value = 16; lfo.connect(lg); lg.connect(o.frequency);
+    f.type = 'lowpass'; f.frequency.value = 650; g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.4, t + 0.08); g.gain.setValueAtTime(0.4, t + dur - 0.12); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    o.connect(f); f.connect(g); g.connect(this.sfx); o.start(t); lfo.start(t); o.stop(t + dur + 0.05); lfo.stop(t + dur + 0.05); this.clunk();
+  }
+  _hiss(dur, freq, vol, sweepTo) {
+    if (!this.ready) return; const c = this.ctx, t = c.currentTime, s = c.createBufferSource(), f = c.createBiquadFilter(), g = c.createGain();
+    s.buffer = this.noiseBuf; f.type = 'bandpass'; f.Q.value = 0.8; f.frequency.setValueAtTime(freq, t); if (sweepTo) f.frequency.exponentialRampToValueAtTime(sweepTo, t + dur);
+    g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.0005, t + dur); s.connect(f); f.connect(g); g.connect(this.sfx); s.start(t); s.stop(t + dur + 0.05);
+  }
+  airRelease() { this._hiss(0.55, 4200, 0.22, 2500); }
+  airApply() { this._hiss(0.18, 3000, 0.1, 2000); }
+  blowOff(amt = 1) { this._hiss(0.45, 3200, 0.2 * amt, 1100); }
+  pump() { this.beep(260, 0.03, 0.08, 'square'); }
+  reverseBeep() { this.beep(1000, 0.2, 0.12, 'square'); }
   setCurve(k) { if (this.ready) this.shaper.curve = makeCurve(k); }
 
   // rpm: engine rpm, load 0..1 (throttle), speed m/s, braking 0..1, turboBoost 0..1, running bool, tune {power, muffler}
@@ -102,15 +174,30 @@ export class AudioSys {
     p.harm.forEach((a, i) => {
       const slot = this.oscs[i];
       slot.o.frequency.setTargetAtTime(fire * (i + 1) * (i === 0 ? 1 : 1 + (i % 2 ? 0.003 : -0.002)), t, 0.02);
-      slot.g.gain.setTargetAtTime(running ? a * (0.35 + 0.65 * load) * (i > 1 ? 0.6 + 0.8 * load : 1) : 0, t, k);
+      slot.g.gain.setTargetAtTime(running ? 0.3 * a * (0.35 + 0.65 * load) * (i > 1 ? 0.6 + 0.8 * load : 1) : 0, t, k);
     });
     // subharmonic "rumble" osc
     const sub = this.oscs[5];
     sub.o.frequency.setTargetAtTime(fire * 0.5, t, 0.03);
-    sub.g.gain.setTargetAtTime(running ? 0.55 + 0.3 * (1 - load) : 0, t, k);
+    sub.g.gain.setTargetAtTime(running ? 0.25 + 0.15 * (1 - load) : 0, t, k);
+    // sampled diesel layer
+    const sm = x => { x = Math.min(1, Math.max(0, x)); return x * x * (3 - 2 * x); };
+    const wR = sm((rpm - 1000) / 550), wL = sm(load * 1.1), lvl = running ? 1 : 0, S = this.samp;
+    const eb = (running && load < 0.05 && speed > 3 && rpm > 1000) ? 1 : 0; this._eb += (eb - this._eb) * 0.08;
+    if (S.loI.started) {
+      S.loI.g.gain.setTargetAtTime(lvl * (1 - wR) * (1 - wL), t, 0.04); S.loL.g.gain.setTargetAtTime(lvl * (1 - wR) * wL, t, 0.04);
+      S.hiI.g.gain.setTargetAtTime(lvl * wR * (1 - wL), t, 0.04); S.hiL.g.gain.setTargetAtTime(lvl * wR * wL, t, 0.04);
+      const r = Math.max(60, rpm); S.loI.src.playbackRate.setTargetAtTime(r / 700, t, 0.03); S.loL.src.playbackRate.setTargetAtTime(r / 700, t, 0.03);
+      S.hiI.src.playbackRate.setTargetAtTime(r / 1500, t, 0.03); S.hiL.src.playbackRate.setTargetAtTime(r / 1500, t, 0.03);
+    }
+    this.sampMix.gain.setTargetAtTime(1.15 + 0.45 * this._eb, t, 0.05);
+    if (running && this._lastLoad > 0.7 && load < 0.15 && rpm > 1250) this.blowOff(Math.min(1, (rpm - 1250) / 700));
+    if (this._lastBrake > 0.45 && braking < 0.15 && speed > 1.5) this.airRelease();
+    else if (this._lastBrake < 0.2 && braking > 0.6 && speed > 3) this.airApply();
+    this._lastLoad = load; this._lastBrake = braking;
 
     const rpmN = Math.min(1, Math.max(0, (rpm - p.idle) / (p.redline - p.idle)));
-    const cut = (p.cutoff + rpmN * 1500 + load * 1400) * mufflerMul;
+    const cut = (p.cutoff + rpmN * 1500 + load * 1400 + this._eb * 500) * mufflerMul * (this.interior ? 0.7 : 1.2);
     this.engFilter.frequency.setTargetAtTime(cut, t, 0.05);
     this.engOut.gain.cancelScheduledValues(t);
     this.engOut.gain.setTargetAtTime(running ? 0.30 + 0.22 * load + 0.1 * rpmN : 0, t, 0.05);

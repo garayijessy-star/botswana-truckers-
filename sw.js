@@ -1,6 +1,6 @@
 // Offline cache: app files are pre-cached, Three.js is cached the first time it loads.
-const CACHE = 'bwt-v2';
-const CORE = ['./', './index.html', './main.js', './audio.js', './trucks.js', './truckdata.js', './track.js', './sim.js', './world.js', './actors.js', './ui.js', './manifest.json', './icon-192.png', './icon-512.png'];
+const CACHE = 'bwt-v3';
+const CORE = ['./', './index.html', './main.js', './audio.js', './trucks.js', './truckdata.js', './track.js', './sim.js', './world.js', './actors.js', './fuel.js', './settings.js', './ui.js', './manifest.json', './icon-192.png', './icon-512.png'];
 const THREE_URL = 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js';
 
 self.addEventListener('install', e => {

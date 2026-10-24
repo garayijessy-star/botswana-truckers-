@@ -7,6 +7,8 @@ import { TRUCKS, defaultConfig, computeStats, totalDamage, START_MONEY, WHEEL_R 
 import { AudioSys, ENGINE_PROFILES } from './audio.js';
 import { Traffic, Animals, Police } from './actors.js';
 import { initUI } from './ui.js';
+import { TANK_L, FUEL_MODES, PUMP_LPS, CALLOUT_FEE, CALLOUT_L, dieselPrice, fuelFlow, stationAt, nextStation } from './fuel.js';
+import { DEFAULTS, PRESETS, DRAW, MIRROR_Q } from './settings.js';
 
 const $ = id => document.getElementById(id);
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
@@ -20,12 +22,12 @@ const SAVE_KEY = 'bwt-save-v1';
 const newOwn = id => ({ eng: { [TRUCKS[id].engines[0].id]: 1 }, turbo: { 0: 1 }, exhaust: { 0: 1 }, tyres: { 0: 1 }, brakes: { 0: 1 }, acc: {}, paint: { [TRUCKS[id].color]: 1 }, tpaint: { 14737632: 1 } });
 function freshSave() {
   return { money: START_MONEY, truck: 'volvo', trucks: { volvo: { cfg: defaultConfig('volvo'), own: newOwn('volvo') } },
-    settings: { steer: 'arrows', sens: 1.2, gfx: 'med', vol: 0.8, auto: true, invert: false }, stats: { delivered: 0, earned: 0, fines: 0 }, job: { from: 0, to: 1 } };
+    settings: Object.assign({}, DEFAULTS), fuel: TANK_L, stats: { delivered: 0, earned: 0, fines: 0 }, job: { from: 0, to: 1 } };
 }
 function loadSave() {
   try {
     const j = JSON.parse(localStorage.getItem(SAVE_KEY));
-    if (j && j.trucks && j.trucks[j.truck]) { const f = freshSave(); j.settings = Object.assign(f.settings, j.settings || {}); j.stats = Object.assign(f.stats, j.stats || {}); j.job = j.job || f.job; return j; }
+    if (j && j.trucks && j.trucks[j.truck]) { const f = freshSave(), old = j.settings || {}; j.settings = Object.assign(f.settings, old.res === undefined ? (PRESETS[old.gfx] || {}) : {}, old); if (typeof j.fuel !== 'number') j.fuel = TANK_L; j.stats = Object.assign(f.stats, j.stats || {}); j.job = j.job || f.job; return j; }
   } catch (_) {}
   return freshSave();
 }
@@ -33,12 +35,9 @@ const save = loadSave();
 function persist() { try { localStorage.setItem(SAVE_KEY, JSON.stringify(save)); } catch (_) {} }
 setInterval(persist, 8000);
 
-const QUALITY = {
-  high: { shadows: true, shadowMap: 2048, trees: 2400, hills: 44, pr: 2, mirrorEvery: 2 },
-  med: { shadows: true, shadowMap: 1024, trees: 1300, hills: 30, pr: 1.5, mirrorEvery: 3 },
-  low: { shadows: false, shadowMap: 512, trees: 600, hills: 18, pr: 1, mirrorEvery: 4 },
-};
-const q = QUALITY[save.settings.gfx] || QUALITY.med;
+// world is always built at full detail; the settings menu scales it down at run time (see applySettings)
+const q = { shadows: true, shadowMap: 2048, trees: 2600, hills: 30, pr: 1.5, mirrorEvery: 3 };
+let MQ = MIRROR_Q.med;
 
 // ------------------------------------------------------------------ state
 const S = {
@@ -47,6 +46,7 @@ const S = {
   zone: '', lastNight: false, msgT: 0, showRev: 0, showRpm: 0, showCockpit: false, orbit: { theta: 0.6, phi: 1.2, r: 26, auto: true },
   mirrorSel: 'L', madj: { L: { yaw: 0, pitch: 0 }, R: { yaw: 0, pitch: 0 } }, frame: 0, depotT: 0, tollT: {}, tilt: 0, gyro: 0, tiltOffset: null, tiltRaw: 0, sensorSeen: false,
   trapUsed: {}, tickets_total: 0, camPos: null, camPsi: 0,
+  engineOn: false, crankT: 0, crankOk: false, refuel: null, fuelWarn: 0, callT: 0, beepT: 0, pumpT: 0, stHint: false, inStation: -1,
 };
 let renderer, scene, camera, world, track, traffic, animals, police, T = null, sim, audio, rng;
 const mirrorRT = {}, mcam = {}, mquad = {}, modelGroup = new THREE.Group(), SH = new THREE.Group();
@@ -123,6 +123,63 @@ function holdButton(el, on, off) {
   for (const ev of ['pointerup', 'pointercancel', 'lostpointercapture']) el.addEventListener(ev, () => off());
 }
 const keys = {};
+const fuelMult = () => { const m = FUEL_MODES[save.settings.fuelMode]; return m === undefined ? FUEL_MODES.normal : m; };
+function toggleEngine() {
+  if (S.crankT > 0 || S.mode !== 'drive') return;
+  if (S.engineOn) { S.engineOn = false; audio.airRelease(); toast('Engine off', 1200); return; }
+  if (S.refuel) return;
+  audio.init();
+  if (save.fuel <= 0 && fuelMult() > 0) { S.crankT = 1.3; S.crankOk = false; audio.crank(1.3); return; }
+  S.crankT = 0.9; S.crankOk = true; audio.crank(0.9);
+}
+function startCall() {
+  if (S.callT > 0) return;
+  S.callT = 8; toast('Fuel delivery called. Stay where you are.', 3500);
+}
+function buildFuelPanel() {
+  const w = document.createElement('div'); w.className = 'panelWrap'; w.id = 'pFuel';
+  const bs = 'flex:1 1 40%;min-height:44px';
+  w.innerHTML = '<div class="panel"><h2 id="fuTitle">Fuel station</h2><div id="fuInfo" style="font-size:14px;line-height:1.5"></div>' +
+    '<div style="margin:10px 0;height:20px;background:#222;border-radius:10px;overflow:hidden"><div id="fuBar" style="height:100%;width:0;background:#ffb300"></div></div>' +
+    '<div style="display:flex;flex-wrap:wrap;gap:8px"><button class="btn" data-fu="50" style="' + bs + '">+50 L</button><button class="btn" data-fu="100" style="' + bs + '">+100 L</button><button class="btn" data-fu="999" style="' + bs + '">Fill up</button><button class="btn" id="fuStop" style="' + bs + '">Leave pump</button></div></div>';
+  document.body.appendChild(w);
+  w.addEventListener('click', e => {
+    const b = e.target.closest('button'); if (!b) return;
+    if (b.id === 'fuStop') { S.refuel = null; w.classList.remove('show'); return; }
+    if (b.dataset.fu) {
+      const price = dieselPrice(S.refuel.st);
+      if (save.money < price) { toast('Not enough money for fuel', 2500); return; }
+      if (save.fuel >= TANK_L - 0.5) { toast('Tank is full', 1500); return; }
+      S.refuel.left = +b.dataset.fu; S.refuel.paid = 0; S.refuel.liters = 0; S.refuel.on = true;
+    }
+  });
+}
+function fuelUI() {
+  const f = save.fuel, m = fuelMult();
+  $('fuelFill').style.width = (m ? f / TANK_L * 100 : 100) + '%';
+  $('fuelFill').style.background = f / TANK_L < 0.1 ? '#ff1744' : f / TANK_L < 0.2 ? '#ff9100' : '#7bd88f';
+  $('fuelTxt').textContent = m ? '⛽ ' + Math.round(f) + ' L' : '⛽ unlimited';
+  $('bCall').style.display = (m && f <= 0 && !S.engineOn && S.mode === 'drive') ? '' : 'none';
+  $('bCall').textContent = S.callT > 0 ? '📞 Help coming… ' + Math.ceil(S.callT) + 's' : '📞 Fuel delivery (' + fmtP(CALLOUT_FEE) + ')';
+}
+function refuelUpdate(dt) {
+  const r = S.refuel; if (!r) return;
+  const price = dieselPrice(r.st);
+  if (r.on) {
+    let amt = Math.min(PUMP_LPS * dt, r.left, TANK_L - save.fuel, save.money / price);
+    if (amt > 0.0001) {
+      save.fuel += amt; r.left -= amt; r.liters += amt; r.paid += amt * price; addMoney(-amt * price);
+      S.pumpT -= dt; if (S.pumpT <= 0) { S.pumpT = 0.12; audio.pump(); }
+    }
+    if (amt <= 0.0001 || r.left <= 0.0001) {
+      r.on = false; if (r.liters > 0.5) { toast('Added ' + Math.round(r.liters) + ' L for ' + fmtP(r.paid), 3000); audio.coin(); persist(); }
+      if (save.fuel < TANK_L - 0.5 && save.money < price) toast('Out of money', 2500);
+    }
+  }
+  $('fuTitle').textContent = 'Fuel station · ' + track.towns[r.st].name;
+  $('fuInfo').innerHTML = 'Diesel ' + price.toFixed(2) + ' P per litre<br>Tank ' + Math.round(save.fuel) + ' / ' + TANK_L + ' L' + (r.on ? '<br>Pumping… ' + Math.round(r.liters) + ' L · ' + fmtP(r.paid) : '') + '<br>Money ' + fmtP(save.money);
+  $('fuBar').style.width = (save.fuel / TANK_L * 100) + '%';
+}
 function setupInput() {
   holdButton($('bGas'), () => { S.gasBtn = 1; }, () => { S.gasBtn = 0; });
   holdButton($('bBrake'), () => { S.brakeBtn = 1; }, () => { S.brakeBtn = 0; });
@@ -157,7 +214,7 @@ function setupInput() {
   }));
   $('bShow').addEventListener('click', () => enterShowroom());
   $('bMusic').addEventListener('click', () => { audio.init(); $('pMusic').classList.add('show'); G.refreshMusic(); });
-  $('bSet').addEventListener('click', () => $('pSet').classList.add('show'));
+  $('bSet').addEventListener('click', () => G.openSettings());
   // extra buttons: look left / right, reverse, manual gears
   const mk = (id, txt, css) => { const b = document.createElement('button'); b.className = 'btn'; b.id = id; b.textContent = txt; b.style.cssText = 'position:absolute;' + css; $('hud').appendChild(b); return b; };
   holdButton(mk('bLookL', '◀ Look', 'left:10px;top:50%;transform:translateY(-50%)'), () => { S.lookHold = -1; }, () => { S.lookHold = 0; });
@@ -168,8 +225,17 @@ function setupInput() {
   gu.addEventListener('click', () => { if (!sim.auto) { sim.gear = clamp(sim.gear + 1, 1, 12); sim.shiftT = 0.3; audio.gearShift(); } });
   gd.addEventListener('click', () => { if (!sim.auto) { sim.gear = clamp(sim.gear - 1, 1, 12); sim.shiftT = 0.3; audio.gearShift(); } });
   const nav = document.createElement('div'); nav.id = 'nav'; nav.style.cssText = 'position:absolute;top:calc(64px + env(safe-area-inset-top));left:50%;transform:translateX(-50%);margin-top:44px;background:rgba(12,16,22,.78);border:1px solid rgba(255,255,255,.18);border-radius:10px;padding:5px 12px;font-size:13px;pointer-events:none;text-align:center;white-space:nowrap'; $('hud').appendChild(nav);
+  $('speedo').insertAdjacentHTML('beforeend', '<div style="margin:3px auto 0;height:5px;width:110px;background:#333;border-radius:3px;overflow:hidden"><div id="fuelFill" style="height:100%;width:100%;background:#7bd88f"></div></div><div class="u" id="fuelTxt"></div>');
+  const eng = mk('bEng', '🔑 Engine', 'right:276px;bottom:calc(14px + env(safe-area-inset-bottom))');
+  eng.addEventListener('click', toggleEngine);
+  const eb = mk('bEBrake', '🛑 E-Brake', 'right:276px;bottom:calc(70px + env(safe-area-inset-bottom));background:rgba(180,20,30,.85)');
+  holdButton(eb, () => { S.ebBtn = 1; }, () => { S.ebBtn = 0; });
+  const call = mk('bCall', '', 'left:50%;top:calc(150px + env(safe-area-inset-top));transform:translateX(-50%);display:none');
+  call.addEventListener('click', startCall);
+  buildFuelPanel();
   addEventListener('keydown', e => {
     if (e.repeat) return; keys[e.code] = true;
+    if (e.code === 'KeyI') toggleEngine();
     if (e.code === 'KeyH') audio.horn(true); if (e.code === 'KeyL') setLights(!S.lights); if (e.code === 'KeyC') $('bCam').click(); if (e.code === 'KeyM') $('bMusic').click();
   });
   addEventListener('keyup', e => { keys[e.code] = false; if (e.code === 'KeyH') audio.horn(false); });
@@ -193,11 +259,12 @@ function exitShowroom() {
 }
 function hideWorld(h) {
   world.group.visible = !h; world.ground.visible = !h; world.sky.visible = !h; world.clouds.visible = !h;
-  traffic.group.visible = !h; animals.group.visible = !h; police.group.visible = !h; SH.visible = h;
+  traffic.group.visible = !h; animals.group.visible = !h; police.group.visible = !h && !!save.settings.police; SH.visible = h;
 }
 
 // ------------------------------------------------------------------ game rules
 function addTicket(kind, amt, heat, cool = 20) {
+  if (!save.settings.police) return false;
   if (S.cd[kind] > 0) return false;
   S.cd[kind] = cool; S.tickets.push({ kind, amt }); S.heat += heat; S.ticketAge = 0;
   toast('Violation: ' + kind + '  (' + fmtP(amt) + ')', 3000); return true;
@@ -212,12 +279,18 @@ function truckCircles() {
   return c;
 }
 
-function gameStep(h, gas, brake) {
+function gameStep(h, gas, brake, eb) {
   const st = curStats(), prof = ENGINE_PROFILES[st.snd] || ENGINE_PROFILES.volvo;
   const loc = track.locate(sim.x, sim.z, S.hint); S.hint = loc.i; S.loc = loc;
-  const surf = surfaceAt(loc.lat);
-  stepSim(sim, h, { throttle: gas, brake: brake, steer: S.steerIn }, { surface: surf, idle: prof.idle, redline: prof.redline }, st);
-  if (Math.abs(loc.lat) > 14) sim.v *= 1 - Math.min(0.9, (Math.abs(loc.lat) - 14) * 0.02) * h;
+  const stn = stationAt(track, loc.s, loc.lat); S.inStation = stn;
+  const surf = stn >= 0 ? 'road' : surfaceAt(loc.lat);
+  const mult = fuelMult(), run = S.engineOn && S.crankT <= 0 && (save.fuel > 0 || mult === 0);
+  stepSim(sim, h, { throttle: gas, brake: brake, steer: S.steerIn, engine: run, ebrake: !!eb }, { surface: surf, idle: prof.idle, redline: prof.redline }, st);
+  if (run && mult > 0) {
+    save.fuel = Math.max(0, save.fuel - fuelFlow(st.hp, sim.throttle, sim.rpm, true) * mult * h);
+    if (save.fuel <= 0) { S.engineOn = false; audio.airRelease(); toast('OUT OF FUEL! The engine stopped.', 5000); }
+  }
+  if (stn < 0 && Math.abs(loc.lat) > 14) sim.v *= 1 - Math.min(0.9, (Math.abs(loc.lat) - 14) * 0.02) * h;
   const cfg = curCfg();
   if (sim.rpm > prof.redline + 40) damage('engine', 0.5 * h);
   damage('tyres', ((sim.slip ? 0.6 : 0.0015 * Math.abs(sim.v)) + (surf === 'sand' ? 0.2 : 0)) * st.tyreWear * h * 0.5);
@@ -236,7 +309,7 @@ function updateRules(dt) {
   // speed traps
   track.posts.forEach((p, i) => {
     const d = track.ds(p.s, loc.s);
-    if (Math.abs(d) < 10 && over > 10 && !police.active && !S.trapUsed[i]) {
+    if (save.settings.police && Math.abs(d) < 10 && over > 10 && !police.active && !S.trapUsed[i]) {
       S.trapUsed[i] = true; addTicket('Speed trap ' + Math.round(kmh) + ' km/h', over > 35 ? 2000 : 800, 0, 5); police.start(player, p); toast('Police radar! Pull over when the officer catches up.', 4000);
     }
     if (Math.abs(d) > 250) S.trapUsed[i] = false;
@@ -244,7 +317,7 @@ function updateRules(dt) {
   // lane / road discipline
   if (loc.lat < -0.4 && Math.abs(sim.v) > 3 && loc.lat > -7) S.wrongT += dt; else S.wrongT = Math.max(0, S.wrongT - dt * 2);
   if (S.wrongT > 6) { addTicket('Driving on the wrong side', 500, 0.25); S.wrongT = 0; }
-  if (Math.abs(loc.lat) > 6.9 && Math.abs(sim.v) > 3) S.offT += dt; else S.offT = Math.max(0, S.offT - dt);
+  if (S.inStation < 0 && Math.abs(loc.lat) > 6.9 && Math.abs(sim.v) > 3) S.offT += dt; else S.offT = Math.max(0, S.offT - dt);
   if (S.offT > 5) { addTicket('Driving off the road', 300, 0.1); S.offT = 0; }
   if (world.nightness > 0.55 && !S.lights && Math.abs(sim.v) > 3) S.nightT += dt; else S.nightT = 0;
   if (S.nightT > 10) { addTicket('No headlights at night', 400, 0.3); S.nightT = 0; }
@@ -274,7 +347,19 @@ function updateRules(dt) {
     }
   } else S.depotT = 0;
   const nd = track.wrap(track.towns[job.to].s + 0 - loc.s);
-  $('nav').textContent = '→ ' + track.towns[job.to].name + ' depot · ' + (nd / 1000).toFixed(1) + ' km';
+  const ns = nextStation(track, loc.s);
+  $('nav').textContent = '→ ' + track.towns[job.to].name + ' depot · ' + (nd / 1000).toFixed(1) + ' km' + (fuelMult() ? '   ⛽ ' + track.towns[ns.i].name + ' ' + (ns.d / 1000).toFixed(1) + ' km' : '');
+  // guardrails: the rail stands just past the shoulder; hitting it hurts and pushes you back
+  if (world.guard && world.guard[loc.i] && Math.abs(loc.lat) > 5.55) {
+    const sg = loc.lat > 0 ? 1 : -1, p = track.pointAt(loc.s, sg * 5.45), spd = Math.abs(sim.v);
+    sim.x += (p.x - sim.x) * 0.25; sim.z += (p.z - sim.z) * 0.25; sim.v *= 0.985;
+    if (spd > 2.5 && !(S.cd.guard > 0)) { S.cd.guard = 0.9; damage('body', clamp(spd * 0.6, 1, 14)); audio.crash(clamp(spd / 18, 0.25, 0.8)); toast('Guardrail!', 1000); }
+  }
+  // fuel stations
+  if (S.inStation >= 0 && fuelMult() > 0) {
+    if (Math.abs(sim.v) < 0.4 && !S.engineOn && S.crankT <= 0 && !S.refuel) { S.refuel = { st: S.inStation, left: 0, liters: 0, paid: 0, on: false }; $('pFuel').classList.add('show'); }
+    else if (Math.abs(sim.v) < 0.4 && S.engineOn && !S.stHint) { S.stHint = true; toast('Switch the engine off (🔑) to refuel', 3500); }
+  } else S.stHint = false;
   // zone messages
   const zn = track.zoneName(loc.s); if (zn !== S.zone) { S.zone = zn; if (zn) toast('Entering ' + zn + '. Limit ' + limit + ' km/h', 2500); }
   // collisions
@@ -287,6 +372,7 @@ function updateRules(dt) {
   if (ah.length) { damage('body', 5); sim.v *= 0.75; audio.crash(0.5); addTicket('Hitting livestock', 2500, 0.6, 6); toast('You hit livestock!', 2200); }
   // police
   S.heat = Math.max(0, S.heat - 0.012 * dt);
+  if (!save.settings.police) S.heat = 0;
   if (S.heat >= 1 && !police.active) { police.start(player, null); S.heat = 0; toast('Police are chasing you! Pull over.', 4000); }
   const res = police.update(dt, player);
   audio.siren(police.active && res.near, dt);
@@ -372,8 +458,12 @@ function driveFrame(dt, panelOpen) {
   const st = save.settings;
   const kb = (keys.ArrowRight || keys.KeyD ? 1 : 0) - (keys.ArrowLeft || keys.KeyA ? 1 : 0);
   const gasIn = (S.gasBtn || keys.ArrowUp || keys.KeyW) ? 1 : 0;
-  const brakeIn = (S.brakeBtn || keys.ArrowDown || keys.KeyS || keys.Space) ? 1 : 0;
+  const ebIn = (S.ebBtn || keys.KeyE || keys.KeyB) ? 1 : 0;
+  const brakeIn = (S.brakeBtn || keys.ArrowDown || keys.KeyS || keys.Space || ebIn) ? 1 : 0;
   S.brakeNow = brakeIn;
+  if (S.crankT > 0 && !panelOpen) { S.crankT -= dt; if (S.crankT <= 0) { if (S.crankOk) { S.engineOn = true; } else toast('No fuel. Call for a fuel delivery.', 3500); } }
+  if (S.callT > 0) { S.callT -= dt; if (S.callT <= 0) { if (save.money >= CALLOUT_FEE) { addMoney(-CALLOUT_FEE); save.fuel = Math.min(TANK_L, save.fuel + CALLOUT_L); toast('Fuel delivered: ' + CALLOUT_L + ' L for ' + fmtP(CALLOUT_FEE), 4000); } else { save.fuel = Math.min(TANK_L, save.fuel + 10); toast('A passing driver gave you 10 L of diesel.', 4500); } persist(); } }
+  refuelUpdate(dt);
   if (!panelOpen) {
     let target = 0;
     if (st.steer === 'arrows') { const goal = S.arrow || kb; S.arrowV = S.arrowV || 0; S.arrowV += (goal - S.arrowV) * Math.min(1, dt * (goal ? 4 : 7)); target = S.arrowV; }
@@ -382,14 +472,14 @@ function driveFrame(dt, panelOpen) {
     S.steerIn = clamp(target, -1, 1);
     sim.auto = !!st.auto;
     acc += dt; let n = 0;
-    while (acc >= 1 / 60 && n < 5) { gameStep(1 / 60, gasIn, brakeIn); acc -= 1 / 60; n++; }
+    while (acc >= 1 / 60 && n < 5) { gameStep(1 / 60, gasIn, brakeIn, ebIn); acc -= 1 / 60; n++; }
     if (n === 5) acc = 0;
     // wheel springs back to centre; look returns to straight ahead
     if (!S.wheelHeld) { S.wheelAng *= 1 - Math.min(1, dt * 5); $('steerWheel').style.transform = 'rotate(' + S.wheelAng + 'rad)'; }
     if (S.lookHold) S.look.yaw += (S.lookHold * 1.6 - S.look.yaw) * Math.min(1, dt * 7);
     else if (!S.lookDrag) S.look.yaw *= 1 - Math.min(1, dt * 3);
     // time of day
-    S.hour = (S.hour + dt / 70) % 24; hourT += dt;
+    if (st.todSph > 0) S.hour = (S.hour + dt / st.todSph) % 24; hourT += dt;
     if (hourT > 0.4) { hourT = 0; world.setHour(S.hour); traffic.setNight(world.nightness); }
     S.rules = updateRules(dt);
     traffic.update(dt, { s: S.loc.s, lat: S.loc.lat, v: sim.v }, S.hour);
@@ -398,11 +488,18 @@ function driveFrame(dt, panelOpen) {
   placeTruck(dt);
   updateCamera(dt);
   const kmh = Math.abs(sim.v) * 3.6, stt = curStats(), prof = ENGINE_PROFILES[stt.snd] || ENGINE_PROFILES.volvo;
-  audio.updateEngine(sim.rpm, panelOpen ? 0 : sim.throttle, Math.abs(sim.v), sim.brake, true, { muffler: stt.muffler, turbo: stt.turboBoost });
+  const running = S.engineOn && S.crankT <= 0;
+  audio.setInterior(S.cam === 0 || S.cam === 3);
+  audio.updateEngine(running ? sim.rpm : 0, panelOpen || !running ? 0 : sim.throttle, Math.abs(sim.v), sim.brake, running, { muffler: stt.muffler, turbo: stt.turboBoost });
+  if (sim.reverse && running && Math.abs(sim.v) > 0.3 && !panelOpen) { S.beepT -= dt; if (S.beepT <= 0) { S.beepT = 0.85; audio.reverseBeep(); } } else S.beepT = 0;
+  const fr = save.fuel / TANK_L;
+  if (fuelMult() && fr < 0.1 && S.fuelWarn < 2) { S.fuelWarn = 2; toast('Fuel very low! Find a station.', 4000); audio.beep(700, 0.2, 0.15); }
+  else if (fuelMult() && fr < 0.2 && S.fuelWarn < 1) { S.fuelWarn = 1; toast('Low fuel. Next station on the left in a town.', 4000); }
+  else if (fr > 0.25) S.fuelWarn = 0;
   hudT += dt;
   if (hudT > 0.08) {
-    hudT = 0; $('spd').textContent = Math.round(kmh);
-    $('gear').textContent = sim.reverse ? 'R' : (sim.auto ? 'D' : 'M') + sim.gear;
+    hudT = 0; $('spd').textContent = Math.round(kmh); fuelUI(); $('bEng').classList.toggle('on', running);
+    $('gear').textContent = !running ? 'OFF' : sim.reverse ? 'R' : (sim.auto ? 'D' : 'M') + sim.gear;
     const lim = S.rules ? S.rules.limit : 80; $('limit').textContent = lim;
     $('limit').style.borderColor = kmh > lim + 10 ? '#ff1744' : '#d32f2f';
   }
@@ -422,7 +519,7 @@ function render(mirrors) {
   const cockpitLike = S.mode === 'drive' && (S.cam === 0 || S.cam === 3);
   world.update(0.016, S.mode === 'show' ? new THREE.Vector3(SX, 0, SZ) : new THREE.Vector3(sim.x, 0, sim.z), camera.position);
   renderer.shadowMap.autoUpdate = true; renderer.shadowMap.needsUpdate = true;
-  if (mirrors && S.mode === 'drive' && S.frame % q.mirrorEvery === 0) { renderMirrors(); renderer.shadowMap.autoUpdate = true; renderer.shadowMap.needsUpdate = true; }
+  if (mirrors && S.mode === 'drive' && S.frame % MQ.every === 0) { renderMirrors(); renderer.shadowMap.autoUpdate = true; renderer.shadowMap.needsUpdate = true; }
   renderer.render(scene, camera);
   if (cockpitLike && S.mode === 'drive') drawMirrorOverlay();
 }
@@ -433,6 +530,7 @@ function showFrame(dt) {
   const idle = prof.idle, target = S.showRev ? idle + (prof.redline - 100 - idle) : (S.showRunning ? idle : 0);
   S.showRpm += (target - S.showRpm) * Math.min(1, dt * (S.showRev ? 2.4 : 1.4));
   const stt = G.showStats || curStats();
+  audio.setInterior(S.showCockpit);
   audio.updateEngine(S.showRpm, S.showRev ? 1 : 0, 0, 0, S.showRunning || !!S.showRev, { muffler: stt.muffler, turbo: stt.turboBoost });
   T.spinWheels(0);
   modelGroup.position.set(0, 0, -5.5);
@@ -450,8 +548,27 @@ function showFrame(dt) {
   render(false);
 }
 
+// ------------------------------------------------------------------ settings applied at run time
+function applySettings() {
+  const st = save.settings, D = DRAW[clamp(st.draw | 0, 0, 3)];
+  renderer.setPixelRatio(Math.min(devicePixelRatio || 1, st.res)); renderer.setSize(innerWidth, innerHeight, false);
+  const sh = world.sun.shadow;
+  world.sun.castShadow = st.shadows > 0;
+  if (st.shadows > 0 && sh.mapSize.x !== st.shadows) { sh.mapSize.set(st.shadows, st.shadows); if (sh.map) { sh.map.dispose(); sh.map = null; } }
+  camera.far = D.far; camera.updateProjectionMatrix();
+  world.sky.scale.setScalar(Math.min(1, D.far * 0.9 / 2400));
+  world.setHaze(st.haze * D.fog); world.setWet(st.wet); world.setVegetation(st.veg);
+  traffic.setDensity(st.traffic); animals.setLevel(st.animals);
+  if (!st.police && police.active) { police.stop(); S.tickets = []; S.heat = 0; $('cop').style.display = 'none'; }
+  police.group.visible = !!st.police && S.mode !== 'show';
+  MQ = MIRROR_Q[st.mirrorQ] || MIRROR_Q.med;
+  for (const side of ['L', 'R']) { mirrorRT[side].setSize(MQ.w, MQ.h); mcam[side].aspect = MQ.w / MQ.h; mcam[side].updateProjectionMatrix(); }
+  if (audio) { audio.setVolume(st.vol); audio.setEngineVolume(st.volEng); audio.setSfxVolume(st.volSfx); audio.setMusicVolume(st.volMusic); }
+}
+
 // ------------------------------------------------------------------ boot
 const G = {
+  applySettings, openSettings() {}, setHour(h) { S.hour = h; world.setHour(h); traffic.setNight(world.nightness); },
   save, persist, toast, updateMoney, addMoney, enterShowroom, exitShowroom, requestSensors, applySteerMode, ENGINE_PROFILES,
   fmtP, showStats: null, refreshMusic: () => {}, openShowroom: () => {},
   previewTruck(id, cfg) { G.showStats = rebuildTruck(id, cfg); return G.showStats; },
@@ -466,10 +583,10 @@ async function boot() {
   const bar = $('bar').firstElementChild, step = async p => { bar.style.width = p + '%'; await new Promise(r => setTimeout(r, 25)); };
   await step(5);
   const canvas = $('gl');
-  renderer = new THREE.WebGLRenderer({ canvas, antialias: q.pr > 1, powerPreference: 'high-performance' });
-  renderer.setPixelRatio(Math.min(devicePixelRatio || 1, q.pr)); renderer.setSize(innerWidth, innerHeight, false);
+  renderer = new THREE.WebGLRenderer({ canvas, antialias: save.settings.res > 1, powerPreference: 'high-performance' });
+  renderer.setPixelRatio(Math.min(devicePixelRatio || 1, save.settings.res)); renderer.setSize(innerWidth, innerHeight, false);
   renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.0;
-  renderer.shadowMap.enabled = q.shadows; renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   scene = new THREE.Scene(); camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.1, 6000); camera.rotation.order = 'YXZ'; scene.add(camera);
   audio = new AudioSys(); audio.setVolume(save.settings.vol);
   await step(15);
@@ -488,7 +605,7 @@ async function boot() {
   await step(70);
   // mirrors
   for (const side of ['L', 'R']) {
-    mirrorRT[side] = new THREE.WebGLRenderTarget(384, 256); mcam[side] = new THREE.PerspectiveCamera(34, 1.5, 0.3, 800); mcam[side].rotation.order = 'YXZ';
+    mirrorRT[side] = new THREE.WebGLRenderTarget(MQ.w, MQ.h); mcam[side] = new THREE.PerspectiveCamera(34, 1.5, 0.3, 800); mcam[side].rotation.order = 'YXZ';
     const sc = new THREE.Scene(), quad = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), new THREE.MeshBasicMaterial({ map: mirrorRT[side].texture, toneMapped: false, side: THREE.DoubleSide }));
     quad.scale.x = -1; quad.position.z = -1; sc.add(quad); mquad[side] = sc;
   }
@@ -507,16 +624,18 @@ async function boot() {
   setupInput(); initUI(G, { onSteerChange: applySteerMode });
   window.addEventListener('resize', () => { renderer.setSize(innerWidth, innerHeight, false); camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); });
   updateMoney(); applySteerMode(); world.setHour(S.hour); traffic.setNight(world.nightness);
+  applySettings();
   hideWorld(false); SH.visible = false;
   await step(100);
   const start = $('bStart'); start.style.display = ''; $('bar').style.display = 'none';
   start.addEventListener('click', async () => {
-    audio.init(); audio.setVolume(save.settings.vol);
+    audio.init(); applySettings();
     try { if (document.documentElement.requestFullscreen) await document.documentElement.requestFullscreen(); } catch (_) {}
     try { if (screen.orientation && screen.orientation.lock) await screen.orientation.lock('landscape'); } catch (_) {}
     $('boot').style.display = 'none'; $('hud').style.display = '';
     toast('Hold GAS to drive. Deliver cargo to ' + track.towns[save.job.to].name + '. Obey the speed limit.', 5000);
     last = performance.now(); requestAnimationFrame(frame);
+    setTimeout(toggleEngine, 400);
   });
 }
 boot().catch(showErr);

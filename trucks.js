@@ -250,11 +250,34 @@ export function buildTruck(truckId, cfg, truckDef) {
   const floor = box(bodyW, 0.12, bodyL, MAT.dark, 0, floorY, bodyL / 2 - 0.2, tr);
   const liv = livery(bodyL, bodyH);
   const sideMat = (flip) => { const t = liv.clone(); t.needsUpdate = true; if (flip) { t.wrapS = THREE.RepeatWrapping; t.repeat.x = -1; t.offset.x = 1; } return new THREE.MeshStandardMaterial({ map: t, color: cfg.trailerPaint, roughness: 0.6, metalness: 0.1 }); };
+  const nBody0 = tr.children.length;
   const bodyBox = new THREE.Mesh(new THREE.BoxGeometry(bodyW, bodyH, bodyL), [sideMat(false), sideMat(true), tpaint, tpaint, tpaint, tpaint]);
   // BoxGeometry order: +x, -x, +y, -y, +z, -z ; side textures run along z so rotate their UV via custom: use plain map on x faces (u across z)
   bodyBox.position.set(0, floorY + bodyH / 2 + 0.06, bodyL / 2 - 0.2); bodyBox.castShadow = true; bodyBox.receiveShadow = true; tr.add(bodyBox);
   box(bodyW + 0.04, 0.06, bodyL + 0.04, MAT.alu, 0, floorY + bodyH + 0.09, bodyL / 2 - 0.2, tr); // roof rail
   for (let i = 0; i < 9; i++) box(bodyW + 0.05, bodyH, 0.05, MAT.alu, 0, floorY + bodyH / 2 + 0.06, i * 1.6 - 0.1, tr); // curtain posts
+  const ttype = cfg.trailer || 'box';
+  if (ttype !== 'box') {
+    for (let i = nBody0; i < tr.children.length; i++) tr.children[i].visible = false;
+    const zc = bodyL / 2 - 0.2;
+    if (ttype === 'tanker') {
+      const sil = new THREE.MeshPhysicalMaterial({ color: cfg.trailerPaint, metalness: 0.9, roughness: 0.22, clearcoat: 0.3 });
+      const tank = new THREE.Mesh(new THREE.CylinderGeometry(1.2, 1.2, bodyL - 0.4, 28), sil); tank.rotation.x = Math.PI / 2; tank.position.set(0, floorY + 1.45, zc); tank.castShadow = true; tr.add(tank);
+      for (const e of [-1, 1]) { const cap = new THREE.Mesh(new THREE.SphereGeometry(1.2, 20, 10), sil); cap.scale.set(1, 1, 0.22); cap.position.set(0, floorY + 1.45, zc + e * (bodyL / 2 - 0.2)); tr.add(cap); }
+      for (let i = 0; i < 6; i++) { const band = new THREE.Mesh(new THREE.TorusGeometry(1.21, 0.035, 6, 28), MAT.alu); band.position.set(0, floorY + 1.45, 0.6 + i * 2.4); tr.add(band); }
+      box(0.7, 0.06, bodyL - 1, MAT.alu, 0, floorY + 2.68, zc, tr);
+      for (let i = 0; i < 4; i++) { const h = new THREE.Mesh(new THREE.CylinderGeometry(0.28, 0.3, 0.2, 12), MAT.alu); h.position.set(0, floorY + 2.78, 1.6 + i * 3.1); tr.add(h); }
+      box(0.5, 0.7, 0.4, MAT.dark, 1.15, floorY - 0.45, 6, tr);
+    } else {
+      box(bodyW, 0.1, bodyL, MAT.dark, 0, floorY + 0.08, zc, tr);
+      const cm = c => new THREE.MeshStandardMaterial({ color: c, roughness: 0.55, metalness: 0.3 });
+      for (const [z, c] of [[3.4, 0x1f4e8c], [9.8, 0xb03a2e]]) {
+        const cb = new THREE.Mesh(new THREE.BoxGeometry(2.44, 2.6, 6.0), cm(c)); cb.position.set(0, floorY + 1.43, z); cb.castShadow = true; tr.add(cb);
+        for (let i = -4; i <= 4; i++) box(0.04, 2.5, 0.06, MAT.alu, 1.23, floorY + 1.43, z + i * 0.6, tr), box(0.04, 2.5, 0.06, MAT.alu, -1.23, floorY + 1.43, z + i * 0.6, tr);
+      }
+      for (const z of [0.2, 6.6, 12.9]) box(bodyW + 0.1, 0.05, 0.08, MAT.alu, 0, floorY + 0.15, z, tr);
+    }
+  }
   // rear: doors, bumper, lights
   T.tailMat = new THREE.MeshStandardMaterial({ color: 0x5a0505, emissive: 0xff1010, emissiveIntensity: 0.25 });
   const rz = bodyL - 0.2 + 0.03;

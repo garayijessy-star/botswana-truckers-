@@ -1,4 +1,5 @@
 import { TRUCKS, PAINTS, UP, ACC, defaultConfig, computeStats, totalDamage, repairCost } from './truckdata.js';
+import { initSettings } from './settings.js';
 
 const $ = id => document.getElementById(id);
 const hex = n => '#' + (n >>> 0).toString(16).padStart(6, '0');
@@ -69,6 +70,7 @@ export function initUI(G, opts) {
       for (const a of ACC) { const o = !!own.acc[a.id], on = !!cfg.acc[a.id]; h += `<div class="item"><div>${a.name}<small>${G.fmtP(a.price)}</small></div><button class="btn small ${on ? 'on' : ''}" data-act="acc" data-id="${a.id}">${on ? 'Fitted' : (o ? 'Fit' : 'Buy')}</button></div>`; }
     } else if (view.tab === 'paint') {
       h += '<h3>Cab colour (P 500 each new colour)</h3><div class="swrow">' + PAINTS.map(c => `<button class="sw ${cfg.paint === c ? 'on' : ''}" style="background:${hex(c)}" data-act="paint" data-c="${c}" aria-label="Cab colour"></button>`).join('') + '</div>';
+      h += '<h3>Trailer type (free)</h3><div class="row2">' + [['box', 'Box trailer'], ['tanker', 'Tanker'], ['flat', 'Flatbed + containers']].map(([k, n]) => `<button class="btn ${(cfg.trailer || 'box') === k ? 'on' : ''}" data-act="ttype" data-k="${k}">${n}</button>`).join('') + '</div>';
       h += '<h3>Trailer colour (P 300 each new colour)</h3><div class="swrow">' + TRAILER_COLOURS.map(c => `<button class="sw ${cfg.trailerPaint === c ? 'on' : ''}" style="background:${hex(c)}" data-act="tpaint" data-c="${c}" aria-label="Trailer colour"></button>`).join('') + '</div>';
     } else if (view.tab === 'repair') {
       for (const [p, label] of [['engine', 'Engine'], ['tyres', 'Tyres'], ['body', 'Body and paint']]) {
@@ -100,30 +102,15 @@ export function initUI(G, opts) {
     if (act === 'part') { const i = +d.i, u = UP[d.p][i]; if (!own[d.p][i]) { if (!spend(u.price)) return; own[d.p][i] = 1; G.audio.coin(); } cfg[d.p] = i; G.audio.clunk(); changed(); return; }
     if (act === 'acc') { const a = ACC.find(x => x.id === d.id); if (!own.acc[a.id]) { if (!spend(a.price)) return; own.acc[a.id] = 1; G.audio.coin(); cfg.acc[a.id] = true; } else cfg.acc[a.id] = !cfg.acc[a.id]; changed(); return; }
     if (act === 'paint') { const c = +d.c; if (!own.paint[c]) { if (!spend(500)) return; own.paint[c] = 1; } cfg.paint = c; changed(); return; }
+    if (act === 'ttype') { cfg.trailer = d.k; changed(); return; }
     if (act === 'tpaint') { const c = +d.c; if (!own.tpaint[c]) { if (!spend(300)) return; own.tpaint[c] = 1; } cfg.trailerPaint = c; changed(); return; }
     if (act === 'repair') { const cost = repairCost(cfg, d.p); if (!spend(cost)) return; cfg.dmg[d.p] = 0; G.audio.clunk(); G.toast('Repaired'); changed(); return; }
     if (act === 'repairAll') { const cost = repairCost(cfg); if (!spend(cost)) return; cfg.dmg = { engine: 0, tyres: 0, body: 0 }; G.audio.clunk(); G.toast('Everything repaired'); changed(); return; }
   });
   G.openShowroom = () => { view.id = save.truck; view.tab = 'trucks'; view.inside = false; G.setShowCockpit(false); preview(); renderShow(); };
 
-  // ======================================================== SETTINGS
-  const st = save.settings;
-  const markSteer = () => document.querySelectorAll('[data-steer]').forEach(b => b.classList.toggle('on', b.dataset.steer === st.steer));
-  document.querySelectorAll('[data-steer]').forEach(b => b.addEventListener('click', () => { st.steer = b.dataset.steer; G.persist(); markSteer(); opts.onSteerChange(); if (st.steer === 'tilt' || st.steer === 'gyro') G.toast('Hold the phone like a steering wheel. Tap Centre steering to calibrate.', 4500); }));
-  markSteer();
-  $('sens').value = st.sens; $('sens').addEventListener('input', e => { st.sens = +e.target.value; });
-  $('gfx').value = st.gfx; $('gfx').addEventListener('change', e => G.setGfx(e.target.value));
-  $('vol').value = st.vol; $('vol').addEventListener('input', e => { st.vol = +e.target.value; G.audio.setVolume(st.vol); });
-  const autoB = $('bAuto'), markAuto = () => { autoB.textContent = st.auto ? 'Automatic gearbox' : 'Manual gearbox (use G+ and G−)'; autoB.classList.toggle('on', !!st.auto); };
-  autoB.addEventListener('click', () => { st.auto = !st.auto; markAuto(); G.persist(); }); markAuto();
-  const extra = document.createElement('div'); extra.className = 'row2'; extra.style.marginTop = '8px';
-  extra.innerHTML = '<button class="btn" id="bInvert">Reverse tilt direction</button><button class="btn" id="bCal">Centre steering</button>';
-  $('bAuto').parentElement.after(extra);
-  const inv = $('bInvert'), markInv = () => inv.classList.toggle('on', !!st.invert);
-  inv.addEventListener('click', () => { st.invert = !st.invert; markInv(); G.persist(); }); markInv();
-  $('bCal').addEventListener('click', () => G.calibrate());
-  $('bCloseSet').addEventListener('click', () => { G.persist(); $('pSet').classList.remove('show'); });
-  $('bResetSave').addEventListener('click', () => { try { localStorage.removeItem('bwt-save-v1'); } catch (_) {} location.reload(); });
+  // ======================================================== SETTINGS (own module)
+  initSettings(G, opts);
 
   // ======================================================== MUSIC
   const au = G.audio;
@@ -145,6 +132,6 @@ export function initUI(G, opts) {
   $('mSeek').addEventListener('input', e => { if (au.el && au.el.duration) au.el.currentTime = (+e.target.value / 1000) * au.el.duration; });
   $('mClose').addEventListener('click', () => $('pMusic').classList.remove('show'));
   setInterval(() => { if (au.el && au.el.duration && $('pMusic').classList.contains('show')) $('mSeek').value = Math.round(au.el.currentTime / au.el.duration * 1000); }, 500);
-  for (const id of ['pSet', 'pMusic']) $(id).addEventListener('click', e => { if (e.target.id === id) $(id).classList.remove('show'); });
+  $('pMusic').addEventListener('click', e => { if (e.target.id === 'pMusic') $('pMusic').classList.remove('show'); });
   renderMusic();
 }

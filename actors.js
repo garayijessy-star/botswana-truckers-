@@ -82,19 +82,28 @@ export class Traffic {
         this.group.add(m.g); this.cars.push(c);
       }
     };
-    place(1, 12); place(-1, 11);
+    place(1, 19); place(-1, 18);
+    for (const c of this.cars) c.on = true;
     this.update(0.001, { s: startS, lat: LANE, v: 0 }, 0);
   }
 
+  // f = 0..1 share of the maximum traffic; cars are switched on alternately so both directions thin out evenly
+  setDensity(f) {
+    const a = this.cars.filter(c => c.dir > 0), b = this.cars.filter(c => c.dir < 0), order = [];
+    for (let i = 0; i < Math.max(a.length, b.length); i++) { if (a[i]) order.push(a[i]); if (b[i]) order.push(b[i]); }
+    const n = Math.round(order.length * Math.max(0, Math.min(1, f)));
+    order.forEach((c, i) => { c.on = i < n; if (!c.on) c.g.visible = false; });
+  }
   setNight(n) { for (const c of this.cars) { c.m.head.emissiveIntensity = 0.2 + n * 2.6; c.m.tail.emissiveIntensity = 0.3 + n * 0.8; } }
 
   update(dt, player, hour) {
     const tr = this.track;
     for (const c of this.cars) {
+      if (!c.on) continue;
       c.stun = Math.max(0, c.stun - dt); c.cool = Math.max(0, c.cool - dt);
       let vt = Math.min(c.vmax, tr.limitAt(c.s) / 3.6 * 1.08), gap = 1e9, ov = 0;
       for (const o of this.cars) {
-        if (o === c || o.dir !== c.dir) continue;
+        if (o === c || o.dir !== c.dir || !o.on) continue;
         const d = c.dir * tr.ds(c.s, o.s);
         if (d > 0 && d < 70) { const gg = d - (c.len + o.len) / 2; if (gg < gap) { gap = gg; ov = o.v; } }
       }
@@ -121,7 +130,7 @@ export class Traffic {
   collide(pc, pv, px, pz) {
     const hits = [];
     for (const c of this.cars) {
-      if (c.cool > 0 || (c.x - px) ** 2 + (c.z - pz) ** 2 > 400) continue;
+      if (!c.on || c.cool > 0 || (c.x - px) ** 2 + (c.z - pz) ** 2 > 400) continue;
       const cc = this.circles(c); let hit = false;
       for (const a of pc) { for (const b of cc) { if ((a.x - b.x) ** 2 + (a.z - b.z) ** 2 < (a.r + b.r) ** 2) { hit = true; break; } } if (hit) break; }
       if (hit) { c.cool = 1.2; c.stun = 3; hits.push({ car: c, speed: Math.abs(pv - c.dir * c.v * 0) + c.v * 0.3 }); }
@@ -148,11 +157,14 @@ export class Animals {
         this.group.add(g); this.list.push(a);
       }
     });
+    this.list.forEach(a => { a.on = true; });
     this.update(0.001, { s: 0, v: 0 });
   }
+  setLevel(f) { const n = Math.round(this.list.length * Math.max(0, Math.min(1, f))); this.list.forEach((a, i) => { a.on = (i * 7919) % this.list.length < n; if (!a.on) a.g.visible = false; }); }
   update(dt, player) {
     const tr = this.track;
     for (const a of this.list) {
+      if (!a.on) continue;
       const d = tr.ds(player.s, a.s);
       a.g.visible = Math.abs(d) < 500;
       if (a.state === 'idle' && a.crosser && d > 30 && d < 130 && player.v > 4) { a.state = 'cross'; }
@@ -171,7 +183,7 @@ export class Animals {
   collide(pc, px, pz) {
     const hits = [];
     for (const a of this.list) {
-      if (a.state === 'dead' || (a.x - px) ** 2 + (a.z - pz) ** 2 > 400) continue;
+      if (!a.on || a.state === 'dead' || (a.x - px) ** 2 + (a.z - pz) ** 2 > 400) continue;
       for (const c of pc) if ((a.x - c.x) ** 2 + (a.z - c.z) ** 2 < (a.radius + c.r) ** 2) { a.state = 'dead'; a.g.rotation.z = Math.PI / 2; a.g.position.y = 0.45; hits.push(a); break; }
     }
     return hits;

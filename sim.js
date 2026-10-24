@@ -13,6 +13,8 @@ const CRR = { road: 0.007, shoulder: 0.03, sand: 0.11 };
 // in: {throttle 0..1, brake 0..1, steer -1..1}; env: {surface, idle, redline}; stats from computeStats
 export function stepSim(s, dt, inp, env, st) {
   const idle = env.idle || 650, red = env.redline || 2000;
+  const on = inp.engine !== false, eBrake = !!inp.ebrake;
+  if (!on) inp = Object.assign({}, inp, { throttle: 0 });
   s.throttle += (inp.throttle - s.throttle) * Math.min(1, dt * 8);
   s.brake += (inp.brake - s.brake) * Math.min(1, dt * 10);
   const surf = env.surface || 'road';
@@ -33,11 +35,12 @@ export function stepSim(s, dt, inp, env, st) {
   const slipRpm = idle + s.throttle * 500;
   s.rpm = Math.max(slipRpm, Math.min(red + 150, wheelRpm));
   if (wheelRpm < slipRpm) s.rpm = idle + (slipRpm - idle) * (1 - Math.min(1, wheelRpm / slipRpm) * 0.5);
+  if (!on) s.rpm = 0;
 
   // --- longitudinal forces ---
   const m = st.mass;
   let F = 0;
-  if (s.shiftT <= 0 && s.rpm < red + 100 && Math.abs(s.v) < (s.reverse ? 6 : VMAX)) {
+  if (on && s.shiftT <= 0 && s.rpm < red + 100 && Math.abs(s.v) < (s.reverse ? 6 : VMAX)) {
     const T = st.nm * s.throttle * torqueFactor(s.rpm, idle, red);
     F = (T * rt * 0.88) / WHEEL_R * dir * (s.reverse ? 0.5 : 1);
   }
@@ -47,9 +50,10 @@ export function stepSim(s, dt, inp, env, st) {
   const sg = Math.sign(s.v) || dir;
   const drag = 3.3 * s.v * Math.abs(s.v);
   const roll = CRR[surf] * m * G * sg;
-  const eb = (s.throttle < 0.05 ? (0.55 + 0.9 * st.retarder) * (s.rpm / 1500) * 1000 : 0) * 12 * sg;   // engine / retarder braking
-  let brakeF = s.brake * st.brake * 6.0 * m * Math.min(1, grip / 0.8 + 0.1) * sg;
-  brakeF = Math.min(Math.abs(brakeF), maxTrac * 2.1 + 1) * sg;
+  const eb = (on && s.throttle < 0.05 ? (0.55 + 0.9 * st.retarder) * (s.rpm / 1500) * 1000 : 0) * 12 * sg;   // engine / retarder braking
+  let brakeF = s.brake * st.brake * 6.0 * (eBrake ? 1.2 : 1) * m * Math.min(1, grip / 0.8 + 0.1) * sg;
+  brakeF = Math.min(Math.abs(brakeF), maxTrac * (eBrake ? 2.7 : 2.1) + 1) * sg;
+  if (eBrake && Math.abs(s.v) > 8) s.slip = 1;
   let net = F - drag - roll - eb - brakeF;
   let a = net / m;
   const v0 = s.v;
